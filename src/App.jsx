@@ -131,6 +131,17 @@ export default function App() {
   const [activeDay, setActiveDay] = useState(null);
   const [selectedLoc, setSelectedLoc] = useState(locations.leh);
   const [isDark, setIsDark] = useState(true);
+  const [isMobileSheetExpanded, setIsMobileSheetExpanded] = useState(false);
+  const [isMobile, setIsMobile] = useState(false);
+
+  useEffect(() => {
+    const checkMobile = () => {
+      setIsMobile(window.innerWidth < 768);
+    };
+    checkMobile();
+    window.addEventListener('resize', checkMobile);
+    return () => window.removeEventListener('resize', checkMobile);
+  }, []);
 
   const [mapData, setMapData] = useState({ world: null, states: null, roads: null, lakes: null, rivers: null });
 
@@ -259,9 +270,17 @@ export default function App() {
     const scaleY = VIEWBOX_HEIGHT / (maxY - minY + padding);
     let targetScale = Math.max(0.5, Math.min(Math.min(scaleX, scaleY), 4));
 
+    // On mobile, shift the center UP so it's not hidden by the bottom sheet
+    const isMobileView = typeof window !== 'undefined' && window.innerWidth < 768;
+    const yOffset = isMobileView ? 120 : 0;
+
+    if (isMobileView) {
+      targetScale *= 0.85; // Zoom out a little bit on mobile
+    }
+
     setTransform({
       x: VIEWBOX_WIDTH / 2 - ((minX + maxX) / 2) * targetScale,
-      y: VIEWBOX_HEIGHT / 2 - ((minY + maxY) / 2) * targetScale,
+      y: VIEWBOX_HEIGHT / 2 - ((minY + maxY) / 2) * targetScale - yOffset,
       scale: targetScale
     });
   }, [projection]);
@@ -277,105 +296,17 @@ export default function App() {
   // Manual zooming disabled. Map zoom is controlled solely by itineraryDays selection.
 
   return (
-    <div className={`flex h-screen w-full overflow-hidden font-sans ${isDark ? 'bg-zinc-950 text-zinc-100' : 'bg-stone-100 text-stone-900'}`}>
+    <div className={`flex flex-col-reverse md:flex-row h-[100dvh] w-full overflow-hidden font-sans ${isDark ? 'bg-zinc-950 text-zinc-100' : 'bg-stone-100 text-stone-900'}`}>
 
       {/* ============================== */}
-      {/* 25% VERTICAL SIDEBAR (MODERN)  */}
-      {/* ============================== */}
-      <div className={`w-[25%] min-w-[340px] flex flex-col border-r shadow-2xl z-20 relative transition-colors duration-500 ${isDark ? 'bg-zinc-900/95 backdrop-blur-2xl border-zinc-800' : 'bg-white/95 backdrop-blur-2xl border-stone-200'}`}>
-
-        {/* TOP: Header (Shrinks) */}
-        <div className="p-6 pb-5 border-b border-inherit shrink-0">
-          <div className="flex justify-between items-center mb-4">
-            <h1 className="text-xl font-black tracking-tighter italic">LADAKH TACTICAL</h1>
-            <div className="flex gap-2">
-              <button onClick={() => setIsDark(!isDark)} className={`p-2 rounded-full border transition-colors ${isDark ? 'border-zinc-700 bg-zinc-800/50 hover:bg-zinc-700' : 'border-stone-300 bg-white hover:bg-stone-100'}`}>
-                {isDark ? <Sun size={14} className="text-zinc-300" /> : <Moon size={14} className="text-zinc-800" />}
-              </button>
-              <button onClick={handleDownloadMap} className={`p-2 rounded-full border transition-colors ${isDark ? 'border-zinc-700 bg-zinc-800/50 hover:bg-zinc-700' : 'border-stone-300 bg-white hover:bg-stone-100'}`} title="Download Map">
-                <Download size={14} className={isDark ? "text-zinc-300" : "text-zinc-800"} />
-              </button>
-              <button onClick={handleDownloadItinerary} className={`p-2 rounded-full border transition-colors ${isDark ? 'border-zinc-700 bg-zinc-800/50 hover:bg-zinc-700' : 'border-stone-300 bg-white hover:bg-stone-100'}`} title="Download Itinerary">
-                <Map size={14} className={isDark ? "text-zinc-300" : "text-zinc-800"} />
-              </button>
-            </div>
-          </div>
-          <div className="flex gap-2 mb-3">
-            <div className="flex-1 pb-2 text-[10px] uppercase tracking-widest font-bold border-b-2 border-blue-500 text-blue-500">
-              Location Intel
-            </div>
-          </div>
-        </div>
-
-        {/* MIDDLE: Location Intel (Shrinks) */}
-        <div className="px-6 pb-4 shrink-0">
-          <div className={`p-4 rounded-xl border min-h-[190px] transition-colors duration-500 ${isDark ? 'bg-zinc-950/50 border-zinc-800' : 'bg-stone-50 border-stone-200'}`}>
-            <h2 className="font-bold text-lg leading-tight mb-1">{selectedLoc.name}</h2>
-            <div className="flex items-center gap-2 text-[10px] font-bold opacity-60 mb-2 tracking-widest uppercase">
-              <Mountain size={10} /> {selectedLoc.elev} | {selectedLoc.region}
-            </div>
-            <p className="text-xs leading-relaxed opacity-80 mb-3">{selectedLoc.desc}</p>
-
-            <div className="flex flex-wrap gap-1 mb-3">
-              {selectedLoc.amenities?.includes('fuel') && <span className="bg-amber-500/20 text-amber-500 text-[9px] px-2 py-0.5 rounded font-bold uppercase border border-amber-500/30">Petrol</span>}
-              {selectedLoc.amenities?.includes('food') && <span className="bg-orange-500/20 text-orange-400 text-[9px] px-2 py-0.5 rounded font-bold uppercase border border-orange-500/30">Food</span>}
-              {selectedLoc.amenities?.includes('network') && <span className="bg-emerald-500/20 text-emerald-400 text-[9px] px-2 py-0.5 rounded font-bold uppercase border border-emerald-500/30">Network</span>}
-              {selectedLoc.amenities?.includes('mechanic') && <span className="bg-slate-500/20 text-slate-400 text-[9px] px-2 py-0.5 rounded font-bold uppercase border border-slate-500/30">Mechanic</span>}
-            </div>
-
-            {selectedLoc.isCritical && <div className="mb-2 flex items-center gap-2 text-[10px] font-bold text-red-500 bg-red-500/10 p-2 rounded border border-red-500/30"><AlertTriangle size={12} /> CRITICAL STOP</div>}
-            {selectedLoc.hotel && <div className="mt-3 flex items-center gap-2 text-[11px] font-bold text-blue-500 bg-blue-500/10 p-2 rounded border border-blue-500/20"><BedDouble size={12} /> {selectedLoc.hotel}</div>}
-            {selectedLoc.warning && <div className="mt-2 flex items-start gap-2 text-[10px] font-bold text-amber-600 bg-amber-500/10 p-2 rounded border border-amber-500/30 leading-tight"><AlertTriangle size={12} className="shrink-0 mt-0.5" /> <span>{selectedLoc.warning}</span></div>}
-          </div>
-        </div>
-
-        {/* BOTTOM: Itinerary List (Grows and Scrolls) */}
-        <div className="flex-1 overflow-y-auto px-6 pb-2 space-y-2 custom-scrollbar">
-          <p className="text-[10px] font-bold uppercase tracking-[0.2em] opacity-40 px-2 flex items-center gap-2 mb-3">
-            <CalendarDays size={12} /> 11-Day Expedition
-          </p>
-          {itineraryDays.map((day, idx) => (
-            <button
-              key={idx}
-              onClick={() => {
-                const isSelectingNewDay = activeDay !== idx;
-                setActiveDay(isSelectingNewDay ? idx : null);
-                if (isSelectingNewDay) setSelectedLoc(locations[day.route[day.route.length - 1]]);
-                else setSelectedLoc(locations.leh);
-              }}
-              className={`w-full text-left p-3 rounded-lg border transition-all flex items-center justify-between group ${activeDay === idx
-                ? 'bg-blue-600 border-blue-400 text-white shadow-lg'
-                : isDark ? 'bg-zinc-800/30 border-zinc-700 hover:bg-zinc-800/50' : 'bg-white border-stone-200 hover:bg-stone-50'
-                }`}
-            >
-              <div className="flex-1 min-w-0 pr-3">
-                <div className={`text-[8px] font-black uppercase tracking-widest mb-0.5 flex items-center gap-1 ${activeDay === idx ? 'text-blue-100' : 'text-zinc-500'}`}>
-                  <span>Day {day.day}</span>{day.distance > 0 && <span className="text-[7px]">• {day.distance}km</span>}
-                </div>
-                <div className="font-bold text-sm truncate">{day.title}</div>
-                <div className={`text-[9px] truncate mt-0.5 flex items-center gap-1 ${activeDay === idx ? 'text-blue-200' : 'text-zinc-500'}`}>
-                  <Clock size={10} /> {day.duration}
-                </div>
-              </div>
-              <ArrowRight size={14} className={`transition-transform ${activeDay === idx ? 'rotate-90 opacity-100' : 'opacity-20 group-hover:opacity-100'}`} />
-            </button>
-          ))}
-        </div>
-
-        <div className="p-4 border-t text-[9px] font-bold opacity-30 tracking-widest text-center uppercase">
-          Based on 2026 Operational Data
-        </div>
-      </div>
-
-      {/* ============================== */}
-      {/* 75% MAP CANVAS (D3 DRIVEN)     */}
+      {/* MAP CANVAS (D3 DRIVEN)         */}
       {/* ============================== */}
       <div
         ref={wrapperRef}
-        className="w-[75%] relative overflow-hidden transition-colors duration-500"
+        className="absolute md:relative inset-0 md:inset-auto md:w-[65%] lg:w-[75%] h-full overflow-hidden transition-colors duration-500 z-10"
         style={{ backgroundColor: themeColors.ocean }}
       >
-        <svg viewBox="0 0 1200 800" width="100%" height="100%">
+        <svg viewBox="0 0 1200 800" preserveAspectRatio="xMidYMid slice" width="100%" height="100%">
           <defs>
             <filter id="routeGlow" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="4" result="blur" /><feComposite in="SourceGraphic" in2="blur" operator="over" /></filter>
             <filter id="stateShadow" x="-20%" y="-20%" width="140%" height="140%"><feDropShadow dx="0" dy="8" stdDeviation="12" floodColor={isDark ? "#000000" : "#475569"} floodOpacity={isDark ? "0.6" : "0.2"} /></filter>
@@ -542,7 +473,7 @@ export default function App() {
             })}
 
             {/* SVG LEGEND (embedded for PNG export) */}
-            <g transform={`translate(${(600 - transform.x) / transform.scale}, ${(770 - transform.y) / transform.scale}) scale(${1 / transform.scale})`}>
+            <g transform={`translate(${(600 - transform.x) / transform.scale}, ${(isMobile ? 600 - transform.y : 760 - transform.y) / transform.scale}) scale(${(isMobile ? 0.6 : 1) / transform.scale})`}>
               <rect x="-260" y="-16" width="520" height="32" rx="16" fill={isDark ? "rgba(24,24,27,0.92)" : "rgba(255,255,255,0.92)"} stroke={isDark ? "#3f3f46" : "#d4d4d8"} strokeWidth="1" />
               <circle cx="-232" cy="0" r="4" fill="#52525b" /><text x="-225" y="3" fontSize="7" fontWeight="700" fill={isDark ? "white" : "#1e293b"}>STAY</text>
               <circle cx="-185" cy="0" r="4" fill="#be123c" /><text x="-178" y="3" fontSize="7" fontWeight="700" fill={isDark ? "white" : "#1e293b"}>HAZARD</text>
@@ -555,8 +486,136 @@ export default function App() {
             </g>
           </g>
         </svg>
-
       </div>
+
+      {/* Mobile Map Overlay (darkens map when sheet is expanded) */}
+      <div
+        className={`md:hidden absolute inset-0 bg-black/60 z-10 transition-opacity duration-500 pointer-events-none ${isMobileSheetExpanded ? 'opacity-100' : 'opacity-0'}`}
+      />
+
+      {/* ============================== */}
+      {/* SIDEBAR / BOTTOM SHEET         */}
+      {/* ============================== */}
+      <div
+        className={`
+          absolute md:relative bottom-0 left-0 w-full md:w-[35%] lg:w-[25%] md:min-w-[340px]
+          flex flex-col shadow-[0_-15px_40px_rgba(0,0,0,0.4)] md:shadow-2xl z-20
+          transition-all duration-500 cubic-bezier(0.4,0,0.2,1)
+          rounded-t-[32px] md:rounded-none border-t md:border-t-0 md:border-r
+          ${isDark ? 'bg-zinc-900/95 backdrop-blur-2xl border-zinc-800' : 'bg-white/95 backdrop-blur-2xl border-stone-200'}
+          ${isMobileSheetExpanded ? 'h-[85dvh]' : 'h-auto max-h-[60dvh]'} md:h-full md:max-h-none
+        `}
+      >
+        {/* Drag handle for aesthetics on mobile */}
+        <div
+          className="md:hidden flex justify-center w-full pt-4 pb-2 shrink-0 cursor-pointer"
+          onClick={() => setIsMobileSheetExpanded(!isMobileSheetExpanded)}
+        >
+          <div className={`w-12 h-1.5 rounded-full transition-colors ${isDark ? 'bg-zinc-700 hover:bg-zinc-500' : 'bg-stone-300 hover:bg-stone-400'}`}></div>
+        </div>
+
+        {/* TOP: Header (Shrinks) */}
+        <div className="px-5 md:px-6 pt-1 md:pt-6 pb-3 md:pb-5 border-b border-inherit shrink-0">
+          <div className="flex justify-between items-center mb-3 md:mb-4">
+            <h1 className="text-lg md:text-xl font-black tracking-tighter italic">LADAKH TACTICAL</h1>
+            <div className="flex gap-2">
+              <button onClick={() => setIsDark(!isDark)} className={`p-2 rounded-full border transition-colors ${isDark ? 'border-zinc-700 bg-zinc-800/50 hover:bg-zinc-700' : 'border-stone-300 bg-white hover:bg-stone-100'}`}>
+                {isDark ? <Sun size={14} className="text-zinc-300" /> : <Moon size={14} className="text-zinc-800" />}
+              </button>
+              <button onClick={handleDownloadMap} className={`p-2 rounded-full border transition-colors ${isDark ? 'border-zinc-700 bg-zinc-800/50 hover:bg-zinc-700' : 'border-stone-300 bg-white hover:bg-stone-100'}`} title="Download Map">
+                <Download size={14} className={isDark ? "text-zinc-300" : "text-zinc-800"} />
+              </button>
+              <button onClick={handleDownloadItinerary} className={`p-2 rounded-full border transition-colors ${isDark ? 'border-zinc-700 bg-zinc-800/50 hover:bg-zinc-700' : 'border-stone-300 bg-white hover:bg-stone-100'}`} title="Download Itinerary">
+                <Map size={14} className={isDark ? "text-zinc-300" : "text-zinc-800"} />
+              </button>
+            </div>
+          </div>
+          <div className="flex gap-2">
+            <div className="flex-1 pb-2 text-[10px] uppercase tracking-widest font-bold border-b-2 border-blue-500 text-blue-500">
+              Location Intel
+            </div>
+          </div>
+        </div>
+
+        {/* MIDDLE: Location Intel (Shrinks) */}
+        <div className="px-5 md:px-6 py-4 shrink-0">
+          <div className={`p-4 rounded-xl border md:min-h-[190px] transition-colors duration-500 ${isDark ? 'bg-zinc-950/50 border-zinc-800' : 'bg-stone-50 border-stone-200'}`}>
+            <h2 className="font-bold text-base md:text-lg leading-tight mb-1">{selectedLoc.name}</h2>
+            <div className="flex items-center gap-2 text-[9px] md:text-[10px] font-bold opacity-60 mb-2 tracking-widest uppercase">
+              <Mountain size={10} /> {selectedLoc.elev} | {selectedLoc.region}
+            </div>
+            <p className={`text-[11px] md:text-xs leading-relaxed opacity-80 mb-3 ${isMobileSheetExpanded ? '' : 'line-clamp-2 md:line-clamp-none'}`}>
+              {selectedLoc.desc}
+            </p>
+
+            <div className="flex flex-wrap gap-1 mb-3">
+              {selectedLoc.amenities?.includes('fuel') && <span className="bg-amber-500/20 text-amber-500 text-[8px] md:text-[9px] px-2 py-0.5 rounded font-bold uppercase border border-amber-500/30">Petrol</span>}
+              {selectedLoc.amenities?.includes('food') && <span className="bg-orange-500/20 text-orange-400 text-[8px] md:text-[9px] px-2 py-0.5 rounded font-bold uppercase border border-orange-500/30">Food</span>}
+              {selectedLoc.amenities?.includes('network') && <span className="bg-emerald-500/20 text-emerald-400 text-[8px] md:text-[9px] px-2 py-0.5 rounded font-bold uppercase border border-emerald-500/30">Network</span>}
+              {selectedLoc.amenities?.includes('mechanic') && <span className="bg-slate-500/20 text-slate-400 text-[8px] md:text-[9px] px-2 py-0.5 rounded font-bold uppercase border border-slate-500/30">Mechanic</span>}
+            </div>
+
+            {selectedLoc.isCritical && <div className="mb-2 flex items-center gap-2 text-[9px] md:text-[10px] font-bold text-red-500 bg-red-500/10 p-2 rounded border border-red-500/30"><AlertTriangle size={12} /> CRITICAL STOP</div>}
+            {selectedLoc.hotel && <div className="mt-2 md:mt-3 flex items-center gap-2 text-[10px] md:text-[11px] font-bold text-blue-500 bg-blue-500/10 p-2 rounded border border-blue-500/20"><BedDouble size={12} /> {selectedLoc.hotel}</div>}
+            {selectedLoc.warning && <div className="mt-2 flex items-start gap-2 text-[9px] md:text-[10px] font-bold text-amber-600 bg-amber-500/10 p-2 rounded border border-amber-500/30 leading-tight"><AlertTriangle size={12} className="shrink-0 mt-0.5" /> <span>{selectedLoc.warning}</span></div>}
+          </div>
+        </div>
+
+        {/* BOTTOM: Itinerary List (Grows and Scrolls) */}
+        <div className={`flex-1 px-5 md:px-6 pb-2 custom-scrollbar ${isMobileSheetExpanded ? 'overflow-y-auto' : 'overflow-hidden'} md:overflow-y-auto`}>
+          <div
+            className={`flex items-center justify-between mb-3 ${!isMobileSheetExpanded ? 'cursor-pointer md:cursor-default' : ''}`}
+            onClick={() => { if (isMobile && !isMobileSheetExpanded) setIsMobileSheetExpanded(true); }}
+          >
+            <p className="text-[9px] md:text-[10px] font-bold uppercase tracking-[0.2em] opacity-40 px-2 flex items-center gap-2">
+              <CalendarDays size={12} /> 11-Day Expedition
+            </p>
+            {/* Show a small expand hint if collapsed on mobile */}
+            {!isMobileSheetExpanded && isMobile && (
+              <span className="text-[9px] uppercase tracking-widest opacity-60 flex items-center gap-1 font-bold animate-pulse text-blue-500">
+                Tap to view <ArrowRight size={10} className="-rotate-90" />
+              </span>
+            )}
+          </div>
+
+          <div className={`space-y-2 transition-all duration-500 ${!isMobileSheetExpanded ? 'hidden md:block' : 'block'}`}>
+            {itineraryDays.map((day, idx) => (
+              <button
+                key={idx}
+                onClick={() => {
+                  const isSelectingNewDay = activeDay !== idx;
+                  setActiveDay(isSelectingNewDay ? idx : null);
+                  if (isSelectingNewDay) setSelectedLoc(locations[day.route[day.route.length - 1]]);
+                  else setSelectedLoc(locations.leh);
+
+                  // Auto-collapse sheet on selection if on mobile
+                  if (isMobile && isSelectingNewDay) setIsMobileSheetExpanded(false);
+                }}
+                className={`w-full text-left p-3 rounded-lg border transition-all flex items-center justify-between group ${activeDay === idx
+                  ? 'bg-blue-600 border-blue-400 text-white shadow-lg'
+                  : isDark ? 'bg-zinc-800/30 border-zinc-700 hover:bg-zinc-800/50' : 'bg-white border-stone-200 hover:bg-stone-50'
+                  }`}
+              >
+                <div className="flex-1 min-w-0 pr-3">
+                  <div className={`text-[8px] font-black uppercase tracking-widest mb-0.5 flex items-center gap-1 ${activeDay === idx ? 'text-blue-100' : 'text-zinc-500'}`}>
+                    <span>Day {day.day}</span>{day.distance > 0 && <span className="text-[7px]">• {day.distance}km</span>}
+                  </div>
+                  <div className="font-bold text-sm truncate">{day.title}</div>
+                  <div className={`text-[9px] truncate mt-0.5 flex items-center gap-1 ${activeDay === idx ? 'text-blue-200' : 'text-zinc-500'}`}>
+                    <Clock size={10} /> {day.duration}
+                  </div>
+                </div>
+                <ArrowRight size={14} className={`transition-transform ${activeDay === idx ? 'rotate-90 opacity-100' : 'opacity-20 group-hover:opacity-100'}`} />
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div className="p-3 md:p-4 border-t text-[8px] md:text-[9px] font-bold opacity-30 tracking-widest text-center uppercase shrink-0">
+          Based on 2026 Operational Data
+        </div>
+      </div>
+
     </div>
   );
 }
