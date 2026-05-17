@@ -343,6 +343,106 @@ export default function App() {
     }
   };
 
+  const staticMapLayers = useMemo(() => {
+    return (
+      <>
+        {mapData.world && mapData.world.features.map((feature, i) => {
+          const isIndia = String(feature.properties.ADMIN).toLowerCase() === 'india';
+          return <path key={`world-${i}`} d={pathGenerator(feature)} fill={isIndia ? themeColors.india : themeColors.foreign} stroke={themeColors.externalBorder} strokeDasharray={!isIndia ? "4 4" : "none"} />;
+        })}
+
+        {mapData.states && mapData.states.features.map((feature, i) => {
+          const stateName = String(feature.properties.name || feature.properties.st_nm).toLowerCase();
+          if (!stateName.includes('ladakh') && !stateName.includes('jammu') && !stateName.includes('kashmir') && !stateName.includes('himachal')) return null;
+          return <path key={`state-fill-${i}`} d={pathGenerator(feature)} fill={themeColors.targetStates} filter="url(#stateShadow)" />;
+        })}
+
+        {referenceLabels.map((ref, idx) => {
+          const [px, py] = projection([ref.lon, ref.lat]);
+          return (
+            <text
+              key={`ref-${idx}`} x={px} y={py}
+              transform={`rotate(${ref.rot}, ${px}, ${py})`}
+              textAnchor="middle"
+              className={`text-[10px] md:text-[14px] font-bold tracking-widest uppercase opacity-30 pointer-events-none`}
+              fill={ref.type === 'water' ? '#38bdf8' : (isDark ? '#94a3b8' : '#64748b')}
+              style={{ fontStyle: ref.type === 'water' ? 'italic' : 'normal' }}
+            >
+              {ref.name}
+            </text>
+          );
+        })}
+
+        {mapData.rivers && mapData.rivers.features.map((f, i) => <path key={`r-${i}`} d={pathGenerator(f)} fill="none" stroke={themeColors.river} strokeWidth="0.8" opacity="0.6" />)}
+        {mapData.lakes && mapData.lakes.features.map((f, i) => <path key={`l-${i}`} d={pathGenerator(f)} fill={themeColors.water} opacity="0.85" />)}
+        {mapData.roads && mapData.roads.features.map((f, i) => <path key={`rd-${i}`} d={pathGenerator(f)} fill="none" stroke={themeColors.road} strokeWidth="0.5" opacity={themeColors.roadOpacity} />)}
+      </>
+    );
+  }, [mapData, themeColors, pathGenerator, projection, isDark]);
+
+  const activeRoutesLayer = useMemo(() => {
+    return itineraryDays.map((day, idx) => {
+      if (day.hideOnMap) return null;
+      const isActive = activeDay === idx;
+      const isFaded = activeDay !== null && activeDay !== idx;
+      return (
+        <g key={idx} style={{ opacity: isFaded ? 0.15 : 1 }} className="transition-opacity duration-500">
+          {day.route.map((startId, i) => {
+            if (i === day.route.length - 1) return null;
+            const endId = day.route[i+1];
+            const segKey = `${startId}->${endId}`;
+            const snapped = snappedRoutes?.[segKey];
+            const type = snapped?.type || 'extreme';
+            
+            const color = type === 'paved' ? '#3b82f6' : type === 'offroad' ? '#f59e0b' : '#ec4899';
+            const dashArray = type === 'paved' ? 'none' : type === 'offroad' ? '5 5' : '2 4';
+            
+            const d = snapped ? coordLineGenerator(snapped.coords) : routeLineGenerator([startId, endId]);
+            return (
+              <path
+                key={`${idx}-${i}`} d={d} fill="none" stroke={color} strokeWidth={isActive ? "4" : "3"}
+                strokeLinecap="round" strokeDasharray={dashArray}
+                filter={isActive ? "url(#routeGlow)" : "none"}
+              />
+            );
+          })}
+        </g>
+      );
+    });
+  }, [itineraryDays, activeDay, snappedRoutes, coordLineGenerator, routeLineGenerator]);
+
+  const mapPointsLayer = useMemo(() => {
+    return (
+      <>
+        {mapData.states && mapData.states.features.map((feature, i) => {
+          const stateName = String(feature.properties.name || feature.properties.st_nm).toLowerCase();
+          if (!stateName.includes('ladakh') && !stateName.includes('jammu') && !stateName.includes('kashmir') && !stateName.includes('himachal')) return null;
+          return <path key={`state-border-${i}`} d={pathGenerator(feature)} fill="none" stroke={themeColors.internalBorder} strokeWidth="2" />;
+        })}
+
+        {Object.entries(locations).map(([id, loc]) => {
+          if (loc.hideOnMap) return null;
+          const [px, py] = projection([loc.lon, loc.lat]);
+          const isActive = activeDay === null || itineraryDays[activeDay]?.route.includes(id);
+          const dynamicStroke = isDark ? "#27272a" : "#ffffff";
+          const iconR = loc.icon === 'dot' ? 3 : 6;
+          const tp = getTextPos(id, iconR);
+
+          return (
+            <g key={id} transform={`translate(${px}, ${py})`} className="cursor-pointer" style={{ opacity: isActive ? 1 : 0.2 }} onClick={() => setSelectedLoc(loc)}>
+              {loc.icon === 'castle' && <circle r={iconR} fill="#52525b" stroke={dynamicStroke} strokeWidth="1" />}
+              {loc.icon === 'star' && <circle r={iconR} fill={loc.isEpicPass ? '#d946ef' : '#4338ca'} stroke={dynamicStroke} strokeWidth="1" />}
+              {loc.icon === 'alert' && <circle r={iconR} fill="#be123c" stroke={dynamicStroke} strokeWidth="1" />}
+              {loc.icon === 'dot' && <circle r={iconR} fill="#a1a1aa" stroke={dynamicStroke} strokeWidth="1" />}
+              
+              <text x={tp.x} y={tp.y} textAnchor={tp.anchor} fontSize="8" fontWeight="600" className="pointer-events-none select-none" fill={isDark ? "white" : "#1e293b"} stroke={isDark ? "#09090b" : "#ffffff"} strokeWidth="2.5" paintOrder="stroke">{loc.name}</text>
+            </g>
+          );
+        })}
+      </>
+    );
+  }, [mapData, themeColors, pathGenerator, projection, activeDay, isDark]);
+
   return (
     <div className={`flex flex-col-reverse md:flex-row h-[100dvh] w-full overflow-hidden ${isDark ? 'bg-slate-950 text-slate-50' : 'bg-sky-50 text-slate-900'}`}>
       <div ref={wrapperRef} className="absolute md:relative inset-0 md:inset-auto md:w-[65%] lg:w-[75%] h-full overflow-hidden z-10 touch-none" style={{ backgroundColor: themeColors.ocean }}>
@@ -374,93 +474,12 @@ export default function App() {
             <filter id="routeGlow" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="4" result="blur" /><feComposite in="SourceGraphic" in2="blur" operator="over" /></filter>
             <filter id="stateShadow" x="-20%" y="-20%" width="140%" height="140%"><feDropShadow dx="0" dy="8" stdDeviation="12" floodColor={isDark ? "#000000" : "#475569"} floodOpacity={isDark ? "0.6" : "0.2"} /></filter>
           </defs>
-          <g transform={`translate(${transform.x}, ${transform.y}) scale(${transform.scale})`} style={{ transition: isDragging.current ? 'none' : 'transform 0.4s cubic-bezier(0.4, 0, 0.2, 1)' }}>
+          <g transform={`translate(${transform.x}, ${transform.y}) scale(${transform.scale})`} style={{ willChange: 'transform', transition: isDragging.current ? 'none' : 'transform 0.4s cubic-bezier(0.4, 0, 0.2, 1)' }}>
             
-            {mapData.world && mapData.world.features.map((feature, i) => {
-              const isIndia = String(feature.properties.ADMIN).toLowerCase() === 'india';
-              return <path key={`world-${i}`} d={pathGenerator(feature)} fill={isIndia ? themeColors.india : themeColors.foreign} stroke={themeColors.externalBorder} strokeDasharray={!isIndia ? "4 4" : "none"} />;
-            })}
+            {staticMapLayers}
+            {activeRoutesLayer}
+            {mapPointsLayer}
 
-            {mapData.states && mapData.states.features.map((feature, i) => {
-              const stateName = String(feature.properties.name || feature.properties.st_nm).toLowerCase();
-              if (!stateName.includes('ladakh') && !stateName.includes('jammu') && !stateName.includes('kashmir') && !stateName.includes('himachal')) return null;
-              return <path key={`state-fill-${i}`} d={pathGenerator(feature)} fill={themeColors.targetStates} filter="url(#stateShadow)" />;
-            })}
-
-            {referenceLabels.map((ref, idx) => {
-              const [px, py] = projection([ref.lon, ref.lat]);
-              return (
-                <text
-                  key={`ref-${idx}`} x={px} y={py}
-                  transform={`rotate(${ref.rot}, ${px}, ${py})`}
-                  textAnchor="middle"
-                  className={`text-[10px] md:text-[14px] font-bold tracking-widest uppercase opacity-30 pointer-events-none`}
-                  fill={ref.type === 'water' ? '#38bdf8' : (isDark ? '#94a3b8' : '#64748b')}
-                  style={{ fontStyle: ref.type === 'water' ? 'italic' : 'normal' }}
-                >
-                  {ref.name}
-                </text>
-              );
-            })}
-
-            {mapData.rivers && mapData.rivers.features.map((f, i) => <path key={`r-${i}`} d={pathGenerator(f)} fill="none" stroke={themeColors.river} strokeWidth="0.8" opacity="0.6" />)}
-            {mapData.lakes && mapData.lakes.features.map((f, i) => <path key={`l-${i}`} d={pathGenerator(f)} fill={themeColors.water} opacity="0.85" />)}
-            {mapData.roads && mapData.roads.features.map((f, i) => <path key={`rd-${i}`} d={pathGenerator(f)} fill="none" stroke={themeColors.road} strokeWidth="0.5" opacity={themeColors.roadOpacity} />)}
-
-            {itineraryDays.map((day, idx) => {
-              if (day.hideOnMap) return null;
-              const isActive = activeDay === idx;
-              const isFaded = activeDay !== null && activeDay !== idx;
-              return (
-                <g key={idx} style={{ opacity: isFaded ? 0.15 : 1 }} className="transition-opacity duration-500">
-                  {day.route.map((startId, i) => {
-                    if (i === day.route.length - 1) return null;
-                    const endId = day.route[i+1];
-                    const segKey = `${startId}->${endId}`;
-                    const snapped = snappedRoutes?.[segKey];
-                    const type = snapped?.type || 'extreme';
-                    
-                    const color = type === 'paved' ? '#3b82f6' : type === 'offroad' ? '#f59e0b' : '#ec4899';
-                    const dashArray = type === 'paved' ? 'none' : type === 'offroad' ? '5 5' : '2 4';
-                    
-                    const d = snapped ? coordLineGenerator(snapped.coords) : routeLineGenerator([startId, endId]);
-                    return (
-                      <path
-                        key={`${idx}-${i}`} d={d} fill="none" stroke={color} strokeWidth={isActive ? "4" : "3"}
-                        strokeLinecap="round" strokeDasharray={dashArray}
-                        filter={isActive ? "url(#routeGlow)" : "none"}
-                      />
-                    );
-                  })}
-                </g>
-              );
-            })}
-
-            {mapData.states && mapData.states.features.map((feature, i) => {
-              const stateName = String(feature.properties.name || feature.properties.st_nm).toLowerCase();
-              if (!stateName.includes('ladakh') && !stateName.includes('jammu') && !stateName.includes('kashmir') && !stateName.includes('himachal')) return null;
-              return <path key={`state-border-${i}`} d={pathGenerator(feature)} fill="none" stroke={themeColors.internalBorder} strokeWidth="2" />;
-            })}
-
-            {Object.entries(locations).map(([id, loc]) => {
-              if (loc.hideOnMap) return null;
-              const [px, py] = projection([loc.lon, loc.lat]);
-              const isActive = activeDay === null || itineraryDays[activeDay]?.route.includes(id);
-              const dynamicStroke = isDark ? "#27272a" : "#ffffff";
-              const iconR = loc.icon === 'dot' ? 3 : 6;
-              const tp = getTextPos(id, iconR);
-
-              return (
-                <g key={id} transform={`translate(${px}, ${py})`} className="cursor-pointer" style={{ opacity: isActive ? 1 : 0.2 }} onClick={() => setSelectedLoc(loc)}>
-                  {loc.icon === 'castle' && <circle r={iconR} fill="#52525b" stroke={dynamicStroke} strokeWidth="1" />}
-                  {loc.icon === 'star' && <circle r={iconR} fill={loc.isEpicPass ? '#d946ef' : '#4338ca'} stroke={dynamicStroke} strokeWidth="1" />}
-                  {loc.icon === 'alert' && <circle r={iconR} fill="#be123c" stroke={dynamicStroke} strokeWidth="1" />}
-                  {loc.icon === 'dot' && <circle r={iconR} fill="#a1a1aa" stroke={dynamicStroke} strokeWidth="1" />}
-                  
-                  <text x={tp.x} y={tp.y} textAnchor={tp.anchor} fontSize="8" fontWeight="600" className="pointer-events-none select-none" fill={isDark ? "white" : "#1e293b"} stroke={isDark ? "#09090b" : "#ffffff"} strokeWidth="2.5" paintOrder="stroke">{loc.name}</text>
-                </g>
-              );
-            })}
           </g>
         </svg>
       </div>
