@@ -109,13 +109,16 @@ export default function App() {
   const [activeDay, setActiveDay] = useState(null);
   const [selectedLoc, setSelectedLoc] = useState(locations.leh);
   const [isDark, setIsDark] = useState(true);
-  const [isMobileSheetExpanded, setIsMobileSheetExpanded] = useState(false);
+  const [isDropdownOpen, setIsDropdownOpen] = useState(false);
   const [isMobile, setIsMobile] = useState(false);
 
   const [mapData, setMapData] = useState({ world: null, states: null, roads: null, lakes: null, rivers: null });
   const [snappedRoutes, setSnappedRoutes] = useState(null);
-  const [transform, setTransform] = useState({ x: 0, y: 0, scale: 1, defaultScale: 1, defaultX: 0, defaultY: 0 });
-  
+
+  const transform = useRef({ x: 0, y: 0, scale: 1, defaultScale: 1, defaultX: 0, defaultY: 0 });
+  const mapGroupRef = useRef(null);
+  const rafRef = useRef(null);
+
   const isDragging = useRef(false);
   const dragStart = useRef({ x: 0, y: 0 });
   const initialPinchDist = useRef(null);
@@ -123,6 +126,18 @@ export default function App() {
 
   const wrapperRef = useRef(null);
   const svgRef = useRef(null);
+
+  const applyTransform = useCallback((t) => {
+    transform.current = t;
+    if (mapGroupRef.current) {
+      if (rafRef.current) cancelAnimationFrame(rafRef.current);
+      rafRef.current = requestAnimationFrame(() => {
+        if (mapGroupRef.current) {
+          mapGroupRef.current.setAttribute('transform', `translate(${t.x}, ${t.y}) scale(${t.scale})`);
+        }
+      });
+    }
+  }, []);
 
   useEffect(() => {
     const checkMobile = () => setIsMobile(window.innerWidth < 768);
@@ -185,19 +200,73 @@ export default function App() {
     });
 
     if (minX === Infinity) return;
-    const padding = 150;
-    const targetScale = Math.min(1200 / (maxX - minX + padding * 2), 800 / (maxY - minY + padding * 2));
+
+    const isMobileView = window.innerWidth < 768;
+    const windowRatio = window.innerWidth / window.innerHeight;
+    const svgRatio = 1200 / 800; // SVG viewBox aspect ratio (1.5)
+
+    // Calculate the actual visible SVG width and height because "preserveAspectRatio=xMidYMid slice"
+    // crops the left/right on narrow portrait viewports and top/bottom on wide landscape viewports.
+    let visibleSvgWidth = 1200;
+    let visibleSvgHeight = 800;
+
+    if (windowRatio < svgRatio) {
+      // Tall portrait screen (Mobile): width is cropped, height is fully visible (800 units)
+      visibleSvgWidth = 800 * windowRatio;
+    } else {
+      // Wide landscape screen (Desktop): height is cropped, width is fully visible (1200 units)
+      visibleSvgHeight = 1200 / windowRatio;
+    }
+
+    let targetScale;
+    let visibleCenterY;
+
+    if (isMobileView) {
+      // Mobile Zoom Rules:
+      // Narrow screens require smaller scales (more zoomed out) to see the full route.
+      // Use higher padding to prevent routes from touching the screen edges.
+      const paddingX = 80;
+      const paddingY = 110;
+
+      const calculatedScale = Math.min(
+        visibleSvgWidth / (maxX - minX + paddingX * 2),
+        visibleSvgHeight / (maxY - minY + paddingY * 2)
+      );
+
+      // Cap zoom on mobile to avoid over-zooming into single spots
+      targetScale = Math.min(1.4, calculatedScale);
+
+      // Shift Y center up significantly to account for bottom panel height
+      visibleCenterY = 260;
+    } else {
+      // Desktop Zoom Rules:
+      const paddingX = 140;
+      const paddingY = 140;
+
+      const calculatedScale = Math.min(
+        visibleSvgWidth / (maxX - minX + paddingX * 2),
+        visibleSvgHeight / (maxY - minY + paddingY * 2)
+      );
+
+      targetScale = Math.min(4.0, calculatedScale);
+      visibleCenterY = 400; // Center vertically on desktop
+    }
+
+    const visibleCenterX = 600;
     const centerX = (minX + maxX) / 2;
     const centerY = (minY + maxY) / 2;
-    setTransform({
-      x: 600 - centerX * targetScale,
-      y: 400 - centerY * targetScale,
+
+    if (mapGroupRef.current) mapGroupRef.current.style.transition = 'transform 0.4s cubic-bezier(0.4, 0, 0.2, 1)';
+
+    applyTransform({
+      x: visibleCenterX - centerX * targetScale,
+      y: visibleCenterY - centerY * targetScale,
       scale: targetScale,
       defaultScale: targetScale,
-      defaultX: 600 - centerX * targetScale,
-      defaultY: 400 - centerY * targetScale
+      defaultX: visibleCenterX - centerX * targetScale,
+      defaultY: visibleCenterY - centerY * targetScale
     });
-  }, [projection]);
+  }, [projection, applyTransform]);
 
   useEffect(() => {
     const timer = setTimeout(() => {
@@ -207,37 +276,43 @@ export default function App() {
     return () => clearTimeout(timer);
   }, [activeDay, zoomToBoundingBox]);
 
-  const handleZoom = (factor) => {
-    setTransform(prev => {
-      let newScale = Math.max(prev.defaultScale, Math.min(8, prev.scale * factor));
-      let newX = 600 - (600 - prev.x) * (newScale / prev.scale);
-      let newY = 400 - (400 - prev.y) * (newScale / prev.scale);
+  const handleZoom = useCallback((factor) => {
+    const prev = transform.current;
+    let newScale = Math.max(prev.defaultScale, Math.min(8, prev.scale * factor));
+    let newX = 600 - (600 - prev.x) * (newScale / prev.scale);
+    let newY = 400 - (400 - prev.y) * (newScale / prev.scale);
 
-      if (newScale === prev.defaultScale) {
-        newX = prev.defaultX;
-        newY = prev.defaultY;
-      } else if (newScale > prev.defaultScale) {
-        // Loosen the pan bounds significantly to account for 'slice' aspect ratio
-        const maxPanX = 1200 * (newScale / prev.defaultScale);
-        const maxPanY = 800 * (newScale / prev.defaultScale);
-        newX = Math.max(prev.defaultX - maxPanX, Math.min(prev.defaultX + maxPanX, newX));
-        newY = Math.max(prev.defaultY - maxPanY, Math.min(prev.defaultY + maxPanY, newY));
-      }
-      return { ...prev, x: newX, y: newY, scale: newScale };
-    });
-  };
+    if (newScale === prev.defaultScale) {
+      newX = prev.defaultX;
+      newY = prev.defaultY;
+    } else if (newScale > prev.defaultScale) {
+      const maxPanX = 1200 * (newScale / prev.defaultScale);
+      const maxPanY = 800 * (newScale / prev.defaultScale);
+      newX = Math.max(prev.defaultX - maxPanX, Math.min(prev.defaultX + maxPanX, newX));
+      newY = Math.max(prev.defaultY - maxPanY, Math.min(prev.defaultY + maxPanY, newY));
+    }
+    if (mapGroupRef.current) mapGroupRef.current.style.transition = 'transform 0.4s cubic-bezier(0.4, 0, 0.2, 1)';
+    applyTransform({ ...prev, x: newX, y: newY, scale: newScale });
+  }, [applyTransform]);
+
+  const handleResetZoom = useCallback(() => {
+    setActiveDay(null);
+    setSelectedLoc(locations.leh);
+    zoomToBoundingBox(Object.keys(locations).filter(l => l !== 'delhi'));
+  }, [zoomToBoundingBox]);
 
   const handlePointerDown = (e) => {
     if (e.touches && e.touches.length === 2) {
       const dx = e.touches[0].clientX - e.touches[1].clientX;
       const dy = e.touches[0].clientY - e.touches[1].clientY;
       initialPinchDist.current = Math.sqrt(dx * dx + dy * dy);
-      initialPinchScale.current = transform.scale;
+      initialPinchScale.current = transform.current.scale;
       isDragging.current = false;
       return;
     }
     isDragging.current = true;
     dragStart.current = { x: e.clientX || (e.touches?.[0].clientX) || 0, y: e.clientY || (e.touches?.[0].clientY) || 0 };
+    if (mapGroupRef.current) mapGroupRef.current.style.transition = 'none';
   };
 
   const handlePointerMove = (e) => {
@@ -246,16 +321,16 @@ export default function App() {
       const dy = e.touches[0].clientY - e.touches[1].clientY;
       const dist = Math.sqrt(dx * dx + dy * dy);
       const scaleDelta = dist / initialPinchDist.current;
-      
-      let newScale = Math.max(transform.defaultScale, Math.min(8, initialPinchScale.current * scaleDelta));
-      let newX = 600 - (600 - transform.x) * (newScale / transform.scale);
-      let newY = 400 - (400 - transform.y) * (newScale / transform.scale);
 
-      if (newScale === transform.defaultScale) {
-        newX = transform.defaultX;
-        newY = transform.defaultY;
+      let newScale = Math.max(transform.current.defaultScale, Math.min(8, initialPinchScale.current * scaleDelta));
+      let newX = 600 - (600 - transform.current.x) * (newScale / transform.current.scale);
+      let newY = 400 - (400 - transform.current.y) * (newScale / transform.current.scale);
+
+      if (newScale === transform.current.defaultScale) {
+        newX = transform.current.defaultX;
+        newY = transform.current.defaultY;
       }
-      setTransform(prev => ({ ...prev, x: newX, y: newY, scale: newScale }));
+      applyTransform({ ...transform.current, x: newX, y: newY, scale: newScale });
       return;
     }
 
@@ -265,42 +340,43 @@ export default function App() {
     const dx = clientX - dragStart.current.x;
     const dy = clientY - dragStart.current.y;
     dragStart.current = { x: clientX, y: clientY };
-    
-    setTransform(prev => {
-      if (prev.scale <= prev.defaultScale) return prev;
-      let newX = prev.x + dx;
-      let newY = prev.y + dy;
-      
-      // Loosen the pan bounds significantly to account for 'slice' aspect ratio
-      const maxPanX = 1200 * (prev.scale / prev.defaultScale);
-      const maxPanY = 800 * (prev.scale / prev.defaultScale);
-      
-      newX = Math.max(prev.defaultX - maxPanX, Math.min(prev.defaultX + maxPanX, newX));
-      newY = Math.max(prev.defaultY - maxPanY, Math.min(prev.defaultY + maxPanY, newY));
-      return { ...prev, x: newX, y: newY };
-    });
+
+    const prev = transform.current;
+    if (prev.scale <= prev.defaultScale) return;
+    let newX = prev.x + dx;
+    let newY = prev.y + dy;
+
+    const maxPanX = 1200 * (prev.scale / prev.defaultScale);
+    const maxPanY = 800 * (prev.scale / prev.defaultScale);
+
+    newX = Math.max(prev.defaultX - maxPanX, Math.min(prev.defaultX + maxPanX, newX));
+    newY = Math.max(prev.defaultY - maxPanY, Math.min(prev.defaultY + maxPanY, newY));
+
+    applyTransform({ ...prev, x: newX, y: newY });
   };
 
   const handlePointerUp = () => {
     isDragging.current = false;
     initialPinchDist.current = null;
+    if (mapGroupRef.current) mapGroupRef.current.style.transition = 'transform 0.4s cubic-bezier(0.4, 0, 0.2, 1)';
   };
 
   const handleDownloadMap = async () => {
     if (!svgRef.current) return;
     const svg = svgRef.current;
-    
+
     // Create a clone of the SVG
     const clonedSvg = svg.cloneNode(true);
 
     const svgData = new XMLSerializer().serializeToString(clonedSvg);
     const canvas = document.createElement("canvas");
     const ctx = canvas.getContext("2d");
-    
-    // Fixed high resolution 3600x2400 (aspect ratio 1.5) for high quality print
-    canvas.width = 3600;
-    canvas.height = 2400;
-    
+
+    const isMobileView = window.innerWidth < 768;
+    // Scale down resolution for mobile to prevent memory crash
+    canvas.width = isMobileView ? 1800 : 3600;
+    canvas.height = isMobileView ? 1200 : 2400;
+
     // Add background color
     ctx.fillStyle = themeColors.ocean;
     ctx.fillRect(0, 0, canvas.width, canvas.height);
@@ -351,10 +427,21 @@ export default function App() {
           return <path key={`world-${i}`} d={pathGenerator(feature)} fill={isIndia ? themeColors.india : themeColors.foreign} stroke={themeColors.externalBorder} strokeDasharray={!isIndia ? "4 4" : "none"} />;
         })}
 
+        {/* Hardware-accelerated State Shadow Layer */}
+        {mapData.states && (
+          <g transform="translate(0, 6)" opacity={isDark ? 0.4 : 0.15}>
+            {mapData.states.features.map((feature, i) => {
+              const stateName = String(feature.properties.name || feature.properties.st_nm).toLowerCase();
+              if (!stateName.includes('ladakh') && !stateName.includes('jammu') && !stateName.includes('kashmir') && !stateName.includes('himachal')) return null;
+              return <path key={`state-shadow-${i}`} d={pathGenerator(feature)} fill="#000000" />;
+            })}
+          </g>
+        )}
+
         {mapData.states && mapData.states.features.map((feature, i) => {
           const stateName = String(feature.properties.name || feature.properties.st_nm).toLowerCase();
           if (!stateName.includes('ladakh') && !stateName.includes('jammu') && !stateName.includes('kashmir') && !stateName.includes('himachal')) return null;
-          return <path key={`state-fill-${i}`} d={pathGenerator(feature)} fill={themeColors.targetStates} filter="url(#stateShadow)" />;
+          return <path key={`state-fill-${i}`} d={pathGenerator(feature)} fill={themeColors.targetStates} />;
         })}
 
         {referenceLabels.map((ref, idx) => {
@@ -389,21 +476,29 @@ export default function App() {
         <g key={idx} style={{ opacity: isFaded ? 0.15 : 1 }} className="transition-opacity duration-500">
           {day.route.map((startId, i) => {
             if (i === day.route.length - 1) return null;
-            const endId = day.route[i+1];
+            const endId = day.route[i + 1];
             const segKey = `${startId}->${endId}`;
             const snapped = snappedRoutes?.[segKey];
             const type = snapped?.type || 'extreme';
-            
+
             const color = type === 'paved' ? '#3b82f6' : type === 'offroad' ? '#f59e0b' : '#ec4899';
             const dashArray = type === 'paved' ? 'none' : type === 'offroad' ? '5 5' : '2 4';
-            
+
             const d = snapped ? coordLineGenerator(snapped.coords) : routeLineGenerator([startId, endId]);
             return (
-              <path
-                key={`${idx}-${i}`} d={d} fill="none" stroke={color} strokeWidth={isActive ? "4" : "3"}
-                strokeLinecap="round" strokeDasharray={dashArray}
-                filter={isActive ? "url(#routeGlow)" : "none"}
-              />
+              <g key={`${idx}-${i}`}>
+                {/* Simulated Glow Path using Layered Path */}
+                {isActive && (
+                  <path
+                    d={d} fill="none" stroke={color} strokeWidth="10"
+                    strokeLinecap="round" opacity="0.3"
+                  />
+                )}
+                <path
+                  d={d} fill="none" stroke={color} strokeWidth={isActive ? "4" : "3"}
+                  strokeLinecap="round" strokeDasharray={dashArray}
+                />
+              </g>
             );
           })}
         </g>
@@ -434,7 +529,7 @@ export default function App() {
               {loc.icon === 'star' && <circle r={iconR} fill={loc.isEpicPass ? '#d946ef' : '#4338ca'} stroke={dynamicStroke} strokeWidth="1" />}
               {loc.icon === 'alert' && <circle r={iconR} fill="#be123c" stroke={dynamicStroke} strokeWidth="1" />}
               {loc.icon === 'dot' && <circle r={iconR} fill="#a1a1aa" stroke={dynamicStroke} strokeWidth="1" />}
-              
+
               <text x={tp.x} y={tp.y} textAnchor={tp.anchor} fontSize="8" fontWeight="600" className="pointer-events-none select-none" fill={isDark ? "white" : "#1e293b"} stroke={isDark ? "#09090b" : "#ffffff"} strokeWidth="2.5" paintOrder="stroke">{loc.name}</text>
             </g>
           );
@@ -445,12 +540,31 @@ export default function App() {
 
   return (
     <div className={`flex flex-col-reverse md:flex-row h-[100dvh] w-full overflow-hidden ${isDark ? 'bg-slate-950 text-slate-50' : 'bg-sky-50 text-slate-900'}`}>
-      <div ref={wrapperRef} className="absolute md:relative inset-0 md:inset-auto md:w-[65%] lg:w-[75%] h-full overflow-hidden z-10 touch-none" style={{ backgroundColor: themeColors.ocean }}>
-        <div className="absolute top-6 left-6 z-20 flex flex-col gap-2">
+      {/* Mobile Top Navbar */}
+      <div className={`md:hidden absolute top-0 left-0 w-full z-30 px-5 py-4 flex justify-between items-center shadow-md ${isDark ? 'bg-zinc-900/90 border-b border-zinc-800 backdrop-blur-md' : 'bg-white/90 border-b border-stone-200 backdrop-blur-md'}`}>
+        <h1 className="text-lg font-black tracking-tighter italic">LADAKH TACTICAL</h1>
+        <div className="flex items-center gap-2">
+          <button onClick={handleResetZoom} className={`p-2 rounded-full border ${isDark ? 'border-zinc-700 bg-zinc-800 text-zinc-300' : 'border-stone-300 bg-white text-slate-600'}`}>
+            <Map size={16} />
+          </button>
+          <button onClick={handleDownloadMap} className={`p-2 rounded-full border ${isDark ? 'border-zinc-700 bg-zinc-800 text-zinc-300' : 'border-stone-300 bg-white text-slate-600'}`}>
+            <Download size={16} />
+          </button>
+          <button onClick={() => setIsDark(!isDark)} className={`p-2 rounded-full border ${isDark ? 'border-zinc-700 bg-zinc-800' : 'border-stone-300 bg-white'}`}>
+            {isDark ? <Sun size={16} /> : <Moon size={16} />}
+          </button>
+        </div>
+      </div>
+
+      <div ref={wrapperRef} className="absolute md:relative inset-0 md:inset-auto md:w-[65%] lg:w-[75%] h-full overflow-hidden z-10 touch-none pt-[70px] md:pt-0" style={{ backgroundColor: themeColors.ocean }}>
+        <div className="hidden md:flex absolute top-6 left-6 z-20 flex-col gap-2">
           <button onClick={() => handleZoom(1.5)} className={`w-10 h-10 rounded-full flex items-center justify-center text-xl font-bold shadow-lg border ${isDark ? 'bg-slate-800 text-slate-200 border-slate-700 hover:bg-slate-700' : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'}`}>+</button>
           <button onClick={() => handleZoom(0.666)} className={`w-10 h-10 rounded-full flex items-center justify-center text-2xl font-bold shadow-lg border ${isDark ? 'bg-slate-800 text-slate-200 border-slate-700 hover:bg-slate-700' : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'}`}>−</button>
+          <button onClick={handleResetZoom} className={`w-10 h-10 rounded-full flex items-center justify-center shadow-lg border mt-2 ${isDark ? 'bg-slate-800 text-slate-200 border-slate-700 hover:bg-slate-700' : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'}`}>
+            <Map size={18} />
+          </button>
         </div>
-        
+
         {/* Horizontal Map Legend */}
         <div className={`absolute bottom-6 md:bottom-10 left-1/2 -translate-x-1/2 z-20 flex gap-4 md:gap-6 px-5 py-3 rounded-full shadow-lg border text-[10px] md:text-xs font-bold uppercase tracking-wider ${isDark ? 'bg-slate-900/80 border-slate-700 text-slate-300 backdrop-blur-md' : 'bg-white/90 border-stone-200 text-slate-600 backdrop-blur-md'}`}>
           <div className="flex items-center gap-2">
@@ -464,18 +578,14 @@ export default function App() {
           </div>
         </div>
 
-        <svg 
+        <svg
           ref={svgRef} viewBox="0 0 1200 800" width="100%" height="100%" preserveAspectRatio="xMidYMid slice"
           onMouseDown={handlePointerDown} onMouseMove={handlePointerMove} onMouseUp={handlePointerUp} onMouseLeave={handlePointerUp}
           onTouchStart={handlePointerDown} onTouchMove={handlePointerMove} onTouchEnd={handlePointerUp}
           className="cursor-grab active:cursor-grabbing"
         >
-          <defs>
-            <filter id="routeGlow" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="4" result="blur" /><feComposite in="SourceGraphic" in2="blur" operator="over" /></filter>
-            <filter id="stateShadow" x="-20%" y="-20%" width="140%" height="140%"><feDropShadow dx="0" dy="8" stdDeviation="12" floodColor={isDark ? "#000000" : "#475569"} floodOpacity={isDark ? "0.6" : "0.2"} /></filter>
-          </defs>
-          <g transform={`translate(${transform.x}, ${transform.y}) scale(${transform.scale})`} style={{ willChange: 'transform', transition: isDragging.current ? 'none' : 'transform 0.4s cubic-bezier(0.4, 0, 0.2, 1)' }}>
-            
+          <g ref={mapGroupRef} transform={`translate(${transform.current.x}, ${transform.current.y}) scale(${transform.current.scale})`} style={{ willChange: 'transform', transition: 'transform 0.4s cubic-bezier(0.4, 0, 0.2, 1)' }}>
+
             {staticMapLayers}
             {activeRoutesLayer}
             {mapPointsLayer}
@@ -484,77 +594,160 @@ export default function App() {
         </svg>
       </div>
 
-      <div className={`md:hidden absolute inset-0 bg-black/60 z-10 transition-opacity duration-500 pointer-events-none ${isMobileSheetExpanded ? 'opacity-100' : 'opacity-0'}`} />
+      <div className={`absolute md:relative bottom-0 left-0 w-full md:w-[35%] lg:w-[25%] md:min-w-[340px] flex flex-col shadow-[0_-15px_40px_rgba(0,0,0,0.4)] md:shadow-2xl z-20 rounded-t-[24px] md:rounded-none border-t md:border-t-0 md:border-r ${isDark ? 'bg-zinc-900 border-zinc-800' : 'bg-white border-stone-200'} h-auto md:h-full`}>
 
-      <div className={`absolute md:relative bottom-0 left-0 w-full md:w-[35%] lg:w-[25%] md:min-w-[340px] flex flex-col shadow-[0_-15px_40px_rgba(0,0,0,0.4)] md:shadow-2xl z-20 transition-all duration-500 rounded-t-[32px] md:rounded-none border-t md:border-t-0 md:border-r ${isDark ? 'bg-zinc-900 border-zinc-800' : 'bg-white border-stone-200'} ${isMobileSheetExpanded ? 'h-[85dvh]' : 'h-auto max-h-[60dvh]'} md:h-full md:max-h-none`}>
-        <div className="md:hidden flex justify-center w-full pt-4 pb-2 shrink-0 cursor-pointer" onClick={() => setIsMobileSheetExpanded(!isMobileSheetExpanded)}>
-          <div className={`w-12 h-1.5 rounded-full ${isDark ? 'bg-zinc-700' : 'bg-stone-300'}`}></div>
-        </div>
+        {/* DESKTOP VIEW SIDEBAR */}
+        <div className="hidden md:flex flex-col h-full overflow-hidden">
+          <div className="px-5 md:px-6 pt-1 md:pt-6 pb-3 md:pb-5 border-b border-inherit shrink-0">
+            <div className="flex justify-between items-center mb-3">
+              <h1 className="text-lg md:text-xl font-black tracking-tighter italic">LADAKH TACTICAL</h1>
+              <div className="flex items-center gap-2">
+                <button onClick={handleDownloadMap} className={`p-2 rounded-full border ${isDark ? 'border-zinc-700 bg-zinc-800 text-zinc-300' : 'border-stone-300 bg-white text-slate-600'}`}>
+                  <Download size={14} />
+                </button>
+                <button onClick={() => setIsDark(!isDark)} className={`p-2 rounded-full border ${isDark ? 'border-zinc-700 bg-zinc-800' : 'border-stone-300 bg-white'}`}>
+                  {isDark ? <Sun size={14} /> : <Moon size={14} />}
+                </button>
+              </div>
+            </div>
+            <div className="text-[10px] uppercase tracking-widest font-bold border-b-2 border-blue-500 text-blue-500 inline-block pb-2">Location Intel</div>
+          </div>
 
-        <div className="px-5 md:px-6 pt-1 md:pt-6 pb-3 md:pb-5 border-b border-inherit shrink-0">
-          <div className="flex justify-between items-center mb-3">
-            <h1 className="text-lg md:text-xl font-black tracking-tighter italic">LADAKH TACTICAL</h1>
-            <div className="flex items-center gap-2">
-              <button onClick={handleDownloadMap} className={`p-2 rounded-full border ${isDark ? 'border-zinc-700 bg-zinc-800 text-zinc-300' : 'border-stone-300 bg-white text-slate-600'}`}>
-                <Download size={14} />
-              </button>
-              <button onClick={() => setIsDark(!isDark)} className={`p-2 rounded-full border ${isDark ? 'border-zinc-700 bg-zinc-800' : 'border-stone-300 bg-white'}`}>
-                {isDark ? <Sun size={14} /> : <Moon size={14} />}
-              </button>
+          <div className="px-5 md:px-6 py-4 shrink-0">
+            <div className={`p-4 rounded-xl border md:min-h-[190px] ${isDark ? 'bg-zinc-950/50 border-zinc-800' : 'bg-stone-50 border-stone-200'}`}>
+              <h2 className="font-bold text-base md:text-lg leading-tight mb-1">{selectedLoc.name}</h2>
+              <div className="flex items-center gap-2 text-[9px] md:text-[10px] font-bold opacity-60 mb-2 tracking-widest uppercase"><Mountain size={10} /> {selectedLoc.elev} | {selectedLoc.region}</div>
+
+              {/* Amenities Tags */}
+              <div className="flex flex-wrap gap-1.5 mb-3">
+                {selectedLoc.amenities?.map((amenity, idx) => (
+                  <span key={idx} className={`px-2 py-1 rounded text-[8px] md:text-[9px] font-bold uppercase tracking-wider flex items-center gap-1 ${isDark ? 'bg-zinc-800 text-zinc-300' : 'bg-stone-200 text-slate-600'}`}>
+                    {amenity === 'fuel' && <Fuel size={10} className="text-orange-500" />}
+                    {amenity === 'food' && <Utensils size={10} className="text-green-500" />}
+                    {amenity === 'network' && <Wifi size={10} className="text-blue-500" />}
+                    {amenity === 'mechanic' && <Wrench size={10} className="text-slate-500" />}
+                    {amenity}
+                  </span>
+                ))}
+              </div>
+
+              <p className={`text-[11px] md:text-xs opacity-80 mb-3`}>{selectedLoc.desc}</p>
             </div>
           </div>
-          <div className="text-[10px] uppercase tracking-widest font-bold border-b-2 border-blue-500 text-blue-500 inline-block pb-2">Location Intel</div>
-        </div>
 
-        <div className="px-5 md:px-6 py-4 shrink-0">
-          <div className={`p-4 rounded-xl border md:min-h-[190px] ${isDark ? 'bg-zinc-950/50 border-zinc-800' : 'bg-stone-50 border-stone-200'}`}>
-            <h2 className="font-bold text-base md:text-lg leading-tight mb-1">{selectedLoc.name}</h2>
-            <div className="flex items-center gap-2 text-[9px] md:text-[10px] font-bold opacity-60 mb-2 tracking-widest uppercase"><Mountain size={10} /> {selectedLoc.elev} | {selectedLoc.region}</div>
-            
-            {/* Amenities Tags */}
-            <div className="flex flex-wrap gap-1.5 mb-3">
-              {selectedLoc.amenities?.map((amenity, idx) => (
-                <span key={idx} className={`px-2 py-1 rounded text-[8px] md:text-[9px] font-bold uppercase tracking-wider flex items-center gap-1 ${isDark ? 'bg-zinc-800 text-zinc-300' : 'bg-stone-200 text-slate-600'}`}>
-                  {amenity === 'fuel' && <Fuel size={10} className="text-orange-500" />}
-                  {amenity === 'food' && <Utensils size={10} className="text-green-500" />}
-                  {amenity === 'network' && <Wifi size={10} className="text-blue-500" />}
-                  {amenity === 'mechanic' && <Wrench size={10} className="text-slate-500" />}
-                  {amenity}
-                </span>
+          <div className={`flex-1 flex flex-col px-5 md:px-6 pb-4 overflow-hidden min-h-0`}>
+            <div className={`flex items-center justify-between mb-3 shrink-0`}>
+              <p className="text-[9px] md:text-[10px] font-bold uppercase tracking-[0.2em] opacity-40 flex items-center gap-2"><CalendarDays size={12} /> 11-Day Journey</p>
+            </div>
+
+            <div className={`flex-1 overflow-y-auto custom-scrollbar pr-2 space-y-2.5 pb-4`}>
+              {itineraryDays.map((day, idx) => (
+                <button
+                  key={idx}
+                  onClick={() => {
+                    setActiveDay(activeDay !== idx ? idx : null);
+                    setSelectedLoc(activeDay !== idx ? locations[day.route[day.route.length - 1]] : locations.leh);
+                  }}
+                  className={`w-full text-left p-3 rounded-lg border flex items-center justify-between group ${activeDay === idx ? 'bg-blue-600 border-blue-400 text-white shadow-lg' : isDark ? 'bg-zinc-800/30 border-zinc-700' : 'bg-white border-stone-200'}`}
+                >
+                  <div className="flex-1 min-w-0 pr-3">
+                    <div className={`text-[8px] font-black uppercase tracking-widest mb-0.5 flex items-center justify-between gap-1 ${activeDay === idx ? 'text-blue-100' : 'text-zinc-500'}`}>
+                      <span>Day {day.day}</span>
+                      {day.distance > 0 && <span className="text-[9px] opacity-80">{day.distance} KM • {day.duration}</span>}
+                    </div>
+                    <div className="font-bold text-sm truncate">{day.title}</div>
+                  </div>
+                </button>
               ))}
             </div>
-            
-            <p className={`text-[11px] md:text-xs opacity-80 mb-3 ${!isMobileSheetExpanded && isMobile ? 'line-clamp-2' : ''}`}>{selectedLoc.desc}</p>
           </div>
         </div>
 
-        <div className={`flex-1 flex flex-col px-5 md:px-6 pb-4 overflow-hidden min-h-0`}>
-          <div className={`flex items-center justify-between mb-3 shrink-0 ${!isMobileSheetExpanded ? 'cursor-pointer md:cursor-default' : ''}`} onClick={() => isMobile && setIsMobileSheetExpanded(true)}>
-            <p className="text-[9px] md:text-[10px] font-bold uppercase tracking-[0.2em] opacity-40 flex items-center gap-2"><CalendarDays size={12} /> 11-Day Journey</p>
-            {!isMobileSheetExpanded && isMobile && <span className="text-[9px] uppercase font-bold text-blue-500">Tap to view</span>}
+        {/* MOBILE VIEW BOTTOM PANEL */}
+        <div className="flex md:hidden flex-col w-full p-4 gap-3 z-40 relative">
+          {/* Dropdown Backdrop */}
+          {isDropdownOpen && (
+            <div className="fixed inset-0 z-30 bg-black/20 backdrop-blur-sm" onClick={() => setIsDropdownOpen(false)} />
+          )}
+
+          {/* 11-Day Journey Dropdown Selector */}
+          <div className="relative w-full z-40">
+            <button
+              onClick={() => setIsDropdownOpen(!isDropdownOpen)}
+              className={`w-full flex items-center justify-between px-4 py-3 rounded-xl border text-sm font-bold shadow-md transition-all ${isDark ? 'bg-zinc-800 border-zinc-700 text-zinc-100 hover:bg-zinc-700/80' : 'bg-white border-stone-200 text-slate-800 hover:bg-stone-50'
+                }`}
+            >
+              <span className="flex items-center gap-2 truncate">
+                <CalendarDays size={16} className="text-blue-500 shrink-0" />
+                {activeDay !== null ? (
+                  <span className="truncate">Day {activeDay + 1}: {itineraryDays[activeDay].title}</span>
+                ) : (
+                  <span>Select Journey Day</span>
+                )}
+              </span>
+              <ChevronUp size={16} className={`transition-transform duration-300 shrink-0 ${isDropdownOpen ? 'rotate-180' : ''}`} />
+            </button>
+
+            {/* Custom Dropdown List */}
+            {isDropdownOpen && (
+              <div className={`absolute bottom-[115%] left-0 w-full max-h-[260px] overflow-y-auto rounded-xl border shadow-2xl z-50 p-2 space-y-1 custom-scrollbar ${isDark ? 'bg-zinc-950 border-zinc-800' : 'bg-white border-stone-200'
+                }`}>
+                {itineraryDays.map((day, idx) => (
+                  <button
+                    key={idx}
+                    onClick={() => {
+                      setActiveDay(activeDay !== idx ? idx : null);
+                      setSelectedLoc(activeDay !== idx ? locations[day.route[day.route.length - 1]] : locations.leh);
+                      setIsDropdownOpen(false);
+                    }}
+                    className={`w-full text-left p-3 rounded-lg border text-xs flex items-center justify-between transition-colors ${activeDay === idx
+                        ? 'bg-blue-600 border-blue-400 text-white font-bold'
+                        : isDark ? 'bg-zinc-900 border-zinc-800 text-zinc-300 hover:bg-zinc-800' : 'bg-stone-50 border-stone-100 text-slate-700 hover:bg-stone-100'
+                      }`}
+                  >
+                    <div className="flex-1 min-w-0 pr-2">
+                      <div className="flex items-center justify-between text-[9px] font-black uppercase tracking-wider mb-0.5 opacity-80">
+                        <span>Day {day.day}</span>
+                        {day.distance > 0 && <span>{day.distance} KM • {day.duration}</span>}
+                      </div>
+                      <div className="truncate font-semibold">{day.title}</div>
+                    </div>
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
 
-          <div className={`flex-1 overflow-y-auto custom-scrollbar pr-2 space-y-2.5 pb-4 ${!isMobileSheetExpanded ? 'hidden md:block' : 'block'}`}>
-            {itineraryDays.map((day, idx) => (
-              <button
-                key={idx}
-                onClick={() => {
-                  setActiveDay(activeDay !== idx ? idx : null);
-                  setSelectedLoc(activeDay !== idx ? locations[day.route[day.route.length - 1]] : locations.leh);
-                  if (isMobile && activeDay !== idx) setIsMobileSheetExpanded(false);
-                }}
-                className={`w-full text-left p-3 rounded-lg border flex items-center justify-between group ${activeDay === idx ? 'bg-blue-600 border-blue-400 text-white shadow-lg' : isDark ? 'bg-zinc-800/30 border-zinc-700' : 'bg-white border-stone-200'}`}
-              >
-                <div className="flex-1 min-w-0 pr-3">
-                  <div className={`text-[8px] font-black uppercase tracking-widest mb-0.5 flex items-center gap-1 ${activeDay === idx ? 'text-blue-100' : 'text-zinc-500'}`}>
-                    <span>Day {day.day}</span>
-                  </div>
-                  <div className="font-bold text-sm truncate">{day.title}</div>
-                </div>
-              </button>
-            ))}
+          {/* Location Intel Card (Compact & Always Visible) */}
+          <div className={`p-4 rounded-xl border shadow-sm ${isDark ? 'bg-zinc-950/60 border-zinc-800' : 'bg-stone-50 border-stone-200'}`}>
+            <div className="flex justify-between items-start mb-1">
+              <h2 className="font-bold text-sm leading-tight">{selectedLoc.name}</h2>
+              <span className="text-[9px] font-bold opacity-60 tracking-wider uppercase">{selectedLoc.elev}</span>
+            </div>
+
+            <div className="flex items-center gap-1.5 text-[8px] font-bold opacity-50 uppercase tracking-widest mb-2">
+              <Mountain size={8} /> {selectedLoc.region}
+            </div>
+
+            {/* Amenities Tags */}
+            {selectedLoc.amenities && selectedLoc.amenities.length > 0 && (
+              <div className="flex flex-wrap gap-1 mb-2">
+                {selectedLoc.amenities.map((amenity, idx) => (
+                  <span key={idx} className={`px-1.5 py-0.5 rounded text-[8px] font-bold uppercase tracking-wider flex items-center gap-1 ${isDark ? 'bg-zinc-800 text-zinc-300' : 'bg-stone-200 text-slate-600'}`}>
+                    {amenity === 'fuel' && <Fuel size={8} className="text-orange-500" />}
+                    {amenity === 'food' && <Utensils size={8} className="text-green-500" />}
+                    {amenity === 'network' && <Wifi size={8} className="text-blue-500" />}
+                    {amenity === 'mechanic' && <Wrench size={8} className="text-slate-500" />}
+                    {amenity}
+                  </span>
+                ))}
+              </div>
+            )}
+
+            <p className="text-[10px] opacity-80 leading-relaxed line-clamp-2">{selectedLoc.desc}</p>
           </div>
         </div>
+
       </div>
     </div>
   );
